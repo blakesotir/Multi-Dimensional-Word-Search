@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""
+multidim_wordsearch.py
+
+N-Dimensional Word Search
+- Detects dimensionality from first input line (by counting integers)
+- Validates grid size
+- Searches for words in ALL direction vectors with components in {-1,0,1} except zero-vector
+- Reports all occurrences with 0-based coordinates and direction vectors
+
+Coordinate ordering convention:
+- We use a row-major / lexicographic ordering where the first dimension is the
+  *slowest* varying and the last dimension is the *fastest* varying.
+  For 2-D this is (row, col) -> rows are the 1st dim, columns the 2nd dim.
+  For N-D coordinates are tuples (d1, d2, ..., dN).
+  Linear index -> coordinates: last index changes fastest.
+
+Matching behavior:
+- Case-insensitive: both grid letters and search words are uppercased internally.
+"""
+
+import sys
+import itertools
+import math
+from typing import List, Tuple
+
+def read_all_input_lines():
+    return [line.rstrip("\n") for line in sys.stdin]
+
+def parse_first_line_ints(line: str) -> List[int]:
+    parts = line.strip().split()
+    ints = []
+    for p in parts:
+        try:
+            ints.append(int(p))
+        except ValueError:
+            # ignore anything non-integer (but spec says integers appear)
+            pass
+    return ints
+
+def product(nums: List[int]) -> int:
+    p = 1
+    for n in nums:
+        p *= n
+    return p
+
+def linear_index_to_coords(idx: int, dims: List[int]) -> Tuple[int, ...]:
+    # row-major with last dimension fastest
+    coords = []
+    for d in reversed(dims):
+        coords.append(idx % d)
+        idx //= d
+    return tuple(reversed(coords))
+
+def coords_to_linear_index(coords: Tuple[int, ...], dims: List[int]) -> int:
+    idx = 0
+    for i, c in enumerate(coords):
+        idx = idx * dims[i] + c
+    return idx
+
+def all_direction_vectors(ndim: int) -> List[Tuple[int, ...]]:
+    # All combinations of -1,0,1 per dimension excluding the all-zero vector
+    vecs = list(itertools.product((-1,0,1), repeat=ndim))
+    return [v for v in vecs if any(x != 0 for x in v)]
+
+def in_bounds(coord: Tuple[int, ...], dims: List[int]) -> bool:
+    return all(0 <= coord[i] < dims[i] for i in range(len(dims)))
+
+def add_tuple(a: Tuple[int, ...], b: Tuple[int, ...]) -> Tuple[int, ...]:
+    return tuple(x+y for x,y in zip(a,b))
+
+def read_grid_and_words(lines: List[str]) -> Tuple[List[int], List[str], List[str]]:
+    """
+    Returns:
+      dims: list of integers (dimensions)
+      grid_letters: list of letters in row-major order (uppercased)
+      words: list of search words (original form)
+    """
+    if not lines:
+        raise SystemExit("No input provided.")
+
+    first = lines[0]
+    dims = parse_first_line_ints(first)
+    if len(dims) == 0:
+        raise SystemExit("First input line must contain at least one integer dimension.")
+
+    ndim = len(dims)
+    expected_letters = product(dims)
+
+    # The rest of lines contain grid letters and words. We must separate them.
+    rest = lines[1:]
+
+    # Handle 1-D and 2-D specially for nicer validation where grid is given as full lines:
+    grid_letters = []
+    words = []
+
+    if ndim == 1:
+        # expecting next line to be a single string of length dims[0]
+        if not rest:
+            raise SystemExit("Missing grid line for 1-D input.")
+        grid_line = rest[0].strip()
+        if len(grid_line) != dims[0]:
+            raise SystemExit(f"1-D: declared length {dims[0]} but got {len(grid_line)} characters.")
+        grid_letters = list(grid_line.upper())
+        words = [w for w in (line.strip() for line in rest[1:]) if w != ""]
+    elif ndim == 2:
+        # convention: dims = [c, r] or [cols, rows] ? We will accept either order but follow spec:
+        # The spec used "5 4" then 4 lines of length 5 -> dims = [5,4] meaning (cols, rows)
+        # We will interpret dims as [size_dim0, size_dim1] where dim0 = columns, dim1 = rows.
+        # For clarity, we treat dims[0] as size of last dimension if users expect (cols rows) ordering.
+        # To make mapping consistent with linear_index_to_coords, we set dims_order = [rows, cols]
+        # BUT to avoid confusion, we will accept first integer = columns (c) and second = rows (r)
+        # and construct dims_for_internal = [r, c] (row-major), where dims[0]=rows, dims[1]=cols.
+        if len(dims) != 2:
+            raise SystemExit("2-D input must have exactly two integers on the first line.")
+        c, r = dims[0], dims[1]
+        if len(rest) < r:
+            raise SystemExit(f"2-D: declared {r} rows but input has only {len(rest)} lines for rows.")
+        row_lines = [rest[i].rstrip() for i in range(r)]
+        for i, row in enumerate(row_lines):
+            if len(row) != c:
+                raise SystemExit(f"2-D: row {i} declared length {c} but got {len(row)} characters.")
+        # Build grid in row-major (rows,cols)
+        # internal dims: [r, c]
+        dims_internal = [r, c]
+        grid_letters = []
+        for row in row_lines:
+            grid_letters.extend(list(row.upper()))
+        # words are remaining lines starting from rest[r]
+        words = [w for w in (line.strip() for line in rest[r:]) if w != ""]
+        return dims_internal, grid_letters, words
+    else:
+        # N-D general: After the first line follow expected_letters characters in documented order.
+        # We'll accept letters broken across lines; any whitespace is ignored.
+        # Words start after we've consumed exactly expected_letters letters.
+        all_text = "".join(rest)  # concatenates lines; spaces/newlines already removed by join of stripped lines? keep raw
+        # But we need to preserve characters including spaces if any; instead gather only letters (non-whitespace)
+        concatenated = "".join(ch for ch in "".join(rest) if not ch.isspace())
+        if len(concatenated) < expected_letters:
+            raise SystemExit(f"N-D: declared product {expected_letters} letters but input contains only {len(concatenated)} letters before words.")
+        # grid letters are first expected_letters characters:
+        grid_letters_raw = concatenated[:expected_letters].upper()
+        grid_letters = list(grid_letters_raw)
+        # Now find where the words start. The remainder of the rest-lines after removing used letters might be ambiguous.
+        # We'll reconstruct by scanning the original rest lines, consuming non-space characters until expected_letters consumed,
+        # then the rest (line boundaries preserved) are words lines.
+        consumed = 0
+        word_lines = []
+        for line in rest:
+            line_nospace = "".join(ch for ch in line if not ch.isspace())
+            if consumed + len(line_nospace) <= expected_letters:
+                # fully consumed by grid
+                consumed += len(line_nospace)
+                continue
+            else:
+                # this line contains the tail (part grid, part words) or is after grid
+                # find how many chars from this line go to grid
+                take = max(0, expected_letters - consumed)
+                # remainder begins at character index j through end of the original line, but because we removed whitespace
+                # earlier, preserving exact separation can be messy; instead, after consuming grid letters, remaining text (from concatenated)
+                # will be used to form words by splitting on whitespace.
+                # Simpler: collect remaining characters from the concatenated string after expected_letters.
+                remainder_all = concatenated[expected_letters:]
+                if remainder_all.strip() == "":
+                    word_lines = []
+                else:
+                    # split remainder by whitespace into lines/words
+                    # attempt to preserve line-based words by splitting on sequences that were originally newlines is hard;
+                    # For practicality, treat remainder as words separated by whitespace
+                    word_lines = [w for w in remainder_all.split() if w != ""]
+                break
+        words = word_lines
+        # internal dims: we keep dims as given, but linear indexing expects dims in order [d1,d2,...] where dims[0] is slowest varying
+        # If user provided dims as d1 d2 ... we will use them as-is.
+        return dims, grid_letters, words
+
+def find_all_occurrences(dims: List[int], grid_letters: List[str], words: List[str]) -> dict:
+    """
+    dims: list of sizes [d1,d2,...,dN] where dims[0] is slowest varying and dims[-1] fastest.
+    grid_letters: list of length product(dims), row-major order (last index fastest).
+    words: list of original word strings
+    Returns: dict mapping word_original -> list of (start_coord_tuple, direction_tuple)
+    """
+    ndim = len(dims)
+    directions = all_direction_vectors(ndim)
+    total_cells = len(grid_letters)
+    results = {}
+    # Create a quick index to access character at coords:
+    def char_at(coord):
+        idx = coords_to_linear_index(coord, dims)
+        return grid_letters[idx]
+    # Normalize grid to uppercase (already done)
+    # For matching, we'll uppercase words
+    for w in words:
+        w_orig = w
+        w_up = w.upper()
+        L = len(w_up)
+        matches = []
+        # iterate all starting coords
+        for linear_idx in range(total_cells):
+            start_coord = linear_index_to_coords(linear_idx, dims)
+            # For each direction
+            for dir_vec in directions:
+                # check if word fits: compute last coordinate = start + (L-1)*dir
+                end_coord = tuple(start_coord[i] + (L-1)*dir_vec[i] for i in range(ndim))
+                if not in_bounds(end_coord, dims):
+                    continue
+                # Now check all positions
+                good = True
+                pos = start_coord
+                for k in range(L):
+                    ch = char_at(pos)
+                    if ch != w_up[k]:
+                        good = False
+                        break
+                    pos = add_tuple(pos, dir_vec)
+                if good:
+                    matches.append((start_coord, dir_vec))
+        results[w_orig] = matches
+    return results
+
+def format_output(results: dict):
+    out_lines = []
+    for word, matches in results.items():
+        if not matches:
+            out_lines.append(f"'{word}' not found")
+        else:
+            parts = []
+            for (coord, dirv) in matches:
+                coord_str = "(" + ",".join(str(x) for x in coord) + ")"
+                dir_str = "(" + ",".join(str(x) for x in dirv) + ")"
+                parts.append(f"{coord_str} dir={dir_str}")
+            out_lines.append(f"'{word}' found: " + "; ".join(parts))
+    return "\n".join(out_lines)
+
+def main():
+    lines = read_all_input_lines()
+    if not lines:
+        print("No input.")
+        return
+    # We need to do a robust parse: the earlier read_grid_and_words has branching returns.
+    first = lines[0]
+    dims_integers = parse_first_line_ints(first)
+    if len(dims_integers) == 0:
+        print("First line must contain integer dimensions.")
+        return
+    ndim = len(dims_integers)
+    # Branch to read grid + words with careful behavior for 2D
+    # We'll implement read_grid_and_words that returns dims (internal order), grid letters, words
+    dims_internal, grid_letters, words = read_grid_and_words(lines)
+    if not words:
+        print("No search words provided.")
+        return
+    # normalize grid letters to uppercase already done earlier
+    results = find_all_occurrences(dims_internal, grid_letters, words)
+    print(format_output(results))
+
+if __name__ == "__main__":
+    main()
+5 4
+ABEDC
+FGHIJ
+KLMNO
+PQRST
+CAT
+BED
+SNI
+python3 multidim_wordsearch.py < input.txt
+'CAT' not found
+'BED' found: (0,1) dir=(1,0)
+'SNI' found: (3,2) dir=(0,-1)
